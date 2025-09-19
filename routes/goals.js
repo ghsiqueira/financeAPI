@@ -58,6 +58,109 @@ router.post('/', auth, [
   }
 });
 
+// NOVA ROTA: Buscar metas ativas (deve vir ANTES da rota /:id)
+router.get('/active', auth, async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+    
+    const goals = await Goal.find({
+      userId: req.user._id,
+      status: 'active'
+    })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit));
+
+    // Calcular progresso para cada meta
+    const goalsWithProgress = goals.map(goal => {
+      const progress = goal.targetAmount > 0 ? 
+        (goal.currentAmount / goal.targetAmount) * 100 : 0;
+      const now = new Date();
+      const totalDays = Math.ceil((goal.endDate - goal.startDate) / (1000 * 60 * 60 * 24));
+      const daysPassed = Math.ceil((now - goal.startDate) / (1000 * 60 * 60 * 24));
+      const daysRemaining = Math.max(0, Math.ceil((goal.endDate - now) / (1000 * 60 * 60 * 24)));
+      const monthsRemaining = Math.max(1, Math.ceil(daysRemaining / 30));
+      const remainingAmount = Math.max(0, goal.targetAmount - goal.currentAmount);
+      const monthlyTargetRemaining = remainingAmount / monthsRemaining;
+      
+      return {
+        ...goal.toObject(),
+        progress: Math.min(progress, 100),
+        daysRemaining,
+        totalDays,
+        daysPassed: Math.max(0, daysPassed),
+        monthsRemaining,
+        remainingAmount,
+        monthlyTargetRemaining
+      };
+    });
+
+    res.json({
+      success: true,
+      data: goalsWithProgress,
+      count: goalsWithProgress.length
+    });
+  } catch (error) {
+    console.error('Erro ao obter metas ativas:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro interno do servidor'
+    });
+  }
+});
+
+// Obter estatísticas das metas (deve vir ANTES da rota /:id)
+router.get('/stats/overview', auth, async (req, res) => {
+  try {
+    const stats = await Goal.aggregate([
+      {
+        $match: { userId: req.user._id }
+      },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          totalTarget: { $sum: '$targetAmount' },
+          totalCurrent: { $sum: '$currentAmount' }
+        }
+      }
+    ]);
+
+    const result = {
+      active: { count: 0, totalTarget: 0, totalCurrent: 0 },
+      completed: { count: 0, totalTarget: 0, totalCurrent: 0 },
+      paused: { count: 0, totalTarget: 0, totalCurrent: 0 },
+      total: { count: 0, totalTarget: 0, totalCurrent: 0 }
+    };
+
+    stats.forEach(stat => {
+      result[stat._id] = {
+        count: stat.count,
+        totalTarget: stat.totalTarget,
+        totalCurrent: stat.totalCurrent
+      };
+      
+      result.total.count += stat.count;
+      result.total.totalTarget += stat.totalTarget;
+      result.total.totalCurrent += stat.totalCurrent;
+    });
+
+    result.total.progress = result.total.totalTarget > 0 
+      ? (result.total.totalCurrent / result.total.totalTarget) * 100 
+      : 0;
+
+    res.json({
+      success: true,
+      stats: result
+    });
+  } catch (error) {
+    console.error('Erro ao obter estatísticas das metas:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro interno do servidor'
+    });
+  }
+});
+
 // Listar metas
 router.get('/', auth, async (req, res) => {
   try {
@@ -77,7 +180,8 @@ router.get('/', auth, async (req, res) => {
 
     // Calcular progresso para cada meta
     const goalsWithProgress = goals.map(goal => {
-      const progress = goal.targetAmount > 0 ? (goal.currentAmount / goal.targetAmount) * 100 : 0;
+      const progress = goal.targetAmount > 0 ? 
+        (goal.currentAmount / goal.targetAmount) * 100 : 0;
       const now = new Date();
       const totalDays = Math.ceil((goal.endDate - goal.startDate) / (1000 * 60 * 60 * 24));
       const daysPassed = Math.ceil((now - goal.startDate) / (1000 * 60 * 60 * 24));
@@ -110,7 +214,7 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-// Obter meta por ID
+// Obter meta por ID (deve vir DEPOIS das rotas específicas)
 router.get('/:id', auth, async (req, res) => {
   try {
     const goal = await Goal.findOne({
@@ -126,7 +230,8 @@ router.get('/:id', auth, async (req, res) => {
     }
 
     // Calcular informações adicionais
-    const progress = goal.targetAmount > 0 ? (goal.currentAmount / goal.targetAmount) * 100 : 0;
+    const progress = goal.targetAmount > 0 ? 
+      (goal.currentAmount / goal.targetAmount) * 100 : 0;
     const now = new Date();
     const totalDays = Math.ceil((goal.endDate - goal.startDate) / (1000 * 60 * 60 * 24));
     const daysPassed = Math.ceil((now - goal.startDate) / (1000 * 60 * 60 * 24));
@@ -199,16 +304,22 @@ router.put('/:id', auth, [
       });
     }
 
-    const updatedGoal = await Goal.findByIdAndUpdate(
-      req.params.id,
-      { ...req.body, updatedAt: new Date() },
-      { new: true }
-    );
+    // Atualizar campos
+    Object.keys(req.body).forEach(key => {
+      if (key === 'startDate' || key === 'endDate') {
+        goal[key] = new Date(req.body[key]);
+      } else {
+        goal[key] = req.body[key];
+      }
+    });
+
+    goal.updatedAt = new Date();
+    await goal.save();
 
     res.json({
       success: true,
       message: 'Meta atualizada com sucesso',
-      goal: updatedGoal
+      goal
     });
   } catch (error) {
     console.error('Erro ao atualizar meta:', error);
@@ -233,8 +344,6 @@ router.patch('/:id/add-amount', auth, [
       });
     }
 
-    const { amount } = req.body;
-
     const goal = await Goal.findOne({
       _id: req.params.id,
       userId: req.user._id
@@ -247,10 +356,10 @@ router.patch('/:id/add-amount', auth, [
       });
     }
 
-    goal.currentAmount += amount;
+    goal.currentAmount += req.body.amount;
     
-    // Verificar se a meta foi completada
-    if (goal.currentAmount >= goal.targetAmount && goal.status !== 'completed') {
+    // Atualizar status se meta atingida
+    if (goal.currentAmount >= goal.targetAmount && goal.status === 'active') {
       goal.status = 'completed';
     }
 
@@ -259,7 +368,7 @@ router.patch('/:id/add-amount', auth, [
 
     res.json({
       success: true,
-      message: `Valor de R$ ${amount.toFixed(2)} adicionado à meta`,
+      message: 'Valor adicionado à meta com sucesso',
       goal
     });
   } catch (error) {
@@ -286,7 +395,7 @@ router.delete('/:id', auth, async (req, res) => {
       });
     }
 
-    await Goal.findByIdAndDelete(req.params.id);
+    await Goal.deleteOne({ _id: req.params.id });
 
     res.json({
       success: true,
@@ -294,59 +403,6 @@ router.delete('/:id', auth, async (req, res) => {
     });
   } catch (error) {
     console.error('Erro ao deletar meta:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erro interno do servidor'
-    });
-  }
-});
-
-// Obter estatísticas das metas
-router.get('/stats/overview', auth, async (req, res) => {
-  try {
-    const stats = await Goal.aggregate([
-      {
-        $match: { userId: req.user._id }
-      },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          totalTarget: { $sum: '$targetAmount' },
-          totalCurrent: { $sum: '$currentAmount' }
-        }
-      }
-    ]);
-
-    const result = {
-      active: { count: 0, totalTarget: 0, totalCurrent: 0 },
-      completed: { count: 0, totalTarget: 0, totalCurrent: 0 },
-      paused: { count: 0, totalTarget: 0, totalCurrent: 0 },
-      total: { count: 0, totalTarget: 0, totalCurrent: 0 }
-    };
-
-    stats.forEach(stat => {
-      result[stat._id] = {
-        count: stat.count,
-        totalTarget: stat.totalTarget,
-        totalCurrent: stat.totalCurrent
-      };
-      
-      result.total.count += stat.count;
-      result.total.totalTarget += stat.totalTarget;
-      result.total.totalCurrent += stat.totalCurrent;
-    });
-
-    result.total.progress = result.total.totalTarget > 0 
-      ? (result.total.totalCurrent / result.total.totalTarget) * 100 
-      : 0;
-
-    res.json({
-      success: true,
-      stats: result
-    });
-  } catch (error) {
-    console.error('Erro ao obter estatísticas das metas:', error);
     res.status(500).json({
       success: false,
       message: 'Erro interno do servidor'

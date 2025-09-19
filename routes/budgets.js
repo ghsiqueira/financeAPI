@@ -6,6 +6,52 @@ const auth = require('../middleware/auth');
 
 const router = express.Router();
 
+// ✅ ROTAS ESPECÍFICAS PRIMEIRO - ADICIONADAS
+// Obter orçamentos atuais (para HomeScreen)
+router.get('/current', auth, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 5;
+    const currentMonth = new Date().getMonth() + 1;
+    const currentYear = new Date().getFullYear();
+    
+    const budgets = await Budget.find({ 
+      userId: req.user._id,
+      month: currentMonth,
+      year: currentYear,
+      isActive: true
+    })
+    .populate('category')
+    .sort({ createdAt: -1 })
+    .limit(limit);
+
+    // Calcular informações adicionais para cada orçamento
+    const budgetsWithInfo = budgets.map(budget => {
+      const usage = budget.monthlyLimit > 0 ? (budget.spent / budget.monthlyLimit) * 100 : 0;
+      const remaining = Math.max(0, budget.monthlyLimit - budget.spent);
+      const isOverBudget = budget.spent > budget.monthlyLimit;
+      
+      return {
+        ...budget.toObject(),
+        usage: Math.min(usage, 100),
+        remaining,
+        isOverBudget,
+        overage: isOverBudget ? budget.spent - budget.monthlyLimit : 0
+      };
+    });
+
+    res.json({
+      success: true,
+      data: budgetsWithInfo
+    });
+  } catch (error) {
+    console.error('Erro nos orçamentos atuais:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro interno do servidor'
+    });
+  }
+});
+
 // Criar orçamento
 router.post('/', auth, [
   body('name').notEmpty().withMessage('Nome é obrigatório'),
@@ -56,7 +102,7 @@ router.post('/', auth, [
     res.status(201).json({
       success: true,
       message: 'Orçamento criado com sucesso',
-      budget
+      data: budget
     });
   } catch (error) {
     console.error('Erro ao criar orçamento:', error);
@@ -105,11 +151,13 @@ router.get('/', auth, async (req, res) => {
 
     res.json({
       success: true,
-      budgets: budgetsWithInfo,
-      pagination: {
-        current: parseInt(page),
-        pages: Math.ceil(total / parseInt(limit)),
-        total
+      data: {
+        data: budgetsWithInfo,
+        pagination: {
+          current: parseInt(page),
+          pages: Math.ceil(total / parseInt(limit)),
+          total
+        }
       }
     });
   } catch (error) {
@@ -121,6 +169,7 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
+// ✅ ROTAS DINÂMICAS POR ÚLTIMO
 // Obter orçamento por ID
 router.get('/:id', auth, async (req, res) => {
   try {
@@ -152,7 +201,7 @@ router.get('/:id', auth, async (req, res) => {
 
     res.json({
       success: true,
-      budget: {
+      data: {
         ...budget.toObject(),
         usage: Math.min(usage, 100),
         remaining,
@@ -231,7 +280,7 @@ router.put('/:id', auth, [
     res.json({
       success: true,
       message: 'Orçamento atualizado com sucesso',
-      budget: updatedBudget
+      data: updatedBudget
     });
   } catch (error) {
     console.error('Erro ao atualizar orçamento:', error);
@@ -389,7 +438,7 @@ router.patch('/:id/recalculate', auth, async (req, res) => {
     res.json({
       success: true,
       message: 'Valores recalculados com sucesso',
-      budget: {
+      data: {
         ...budget.toObject(),
         oldSpent: budget.spent,
         newSpent: newSpentAmount

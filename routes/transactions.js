@@ -6,6 +6,90 @@ const auth = require('../middleware/auth');
 
 const router = express.Router();
 
+// ✅ ROTAS ESPECÍFICAS PRIMEIRO - ADICIONADAS
+// Obter resumo financeiro
+router.get('/summary', auth, async (req, res) => {
+  try {
+    const { month, year } = req.query;
+    const currentMonth = month || new Date().getMonth() + 1;
+    const currentYear = year || new Date().getFullYear();
+
+    const startDate = new Date(currentYear, currentMonth - 1, 1);
+    const endDate = new Date(currentYear, currentMonth, 0, 23, 59, 59);
+
+    const summary = await Transaction.aggregate([
+      {
+        $match: {
+          userId: req.user._id,
+          date: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: '$type',
+          total: { $sum: '$amount' },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    const result = {
+      income: 0,
+      expense: 0,
+      incomeCount: 0,
+      expenseCount: 0,
+      balance: 0
+    };
+
+    summary.forEach(item => {
+      if (item._id === 'income') {
+        result.income = item.total;
+        result.incomeCount = item.count;
+      } else {
+        result.expense = item.total;
+        result.expenseCount = item.count;
+      }
+    });
+
+    result.balance = result.income - result.expense;
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    console.error('Erro no summary:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro interno do servidor'
+    });
+  }
+});
+
+// Obter transações recentes
+router.get('/recent', auth, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 5;
+    
+    const transactions = await Transaction.find({ userId: req.user._id })
+      .populate('category')
+      .populate('budgetId')
+      .sort({ date: -1 })
+      .limit(limit);
+
+    res.json({
+      success: true,
+      data: transactions
+    });
+  } catch (error) {
+    console.error('Erro nas transações recentes:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro interno do servidor'
+    });
+  }
+});
+
 // Criar transação
 router.post('/', auth, [
   body('description').notEmpty().withMessage('Descrição é obrigatória'),
@@ -56,7 +140,7 @@ router.post('/', auth, [
     res.status(201).json({
       success: true,
       message: 'Transação criada com sucesso',
-      transaction
+      data: transaction
     });
   } catch (error) {
     console.error('Erro ao criar transação:', error);
@@ -116,11 +200,13 @@ router.get('/', auth, [
 
     res.json({
       success: true,
-      transactions,
-      pagination: {
-        current: page,
-        pages: Math.ceil(total / limit),
-        total
+      data: {
+        data: transactions,
+        pagination: {
+          current: page,
+          pages: Math.ceil(total / limit),
+          total
+        }
       }
     });
   } catch (error) {
@@ -132,6 +218,7 @@ router.get('/', auth, [
   }
 });
 
+// ✅ ROTAS DINÂMICAS POR ÚLTIMO
 // Obter transação por ID
 router.get('/:id', auth, async (req, res) => {
   try {
@@ -149,7 +236,7 @@ router.get('/:id', auth, async (req, res) => {
 
     res.json({
       success: true,
-      transaction
+      data: transaction
     });
   } catch (error) {
     console.error('Erro ao obter transação:', error);
@@ -218,7 +305,7 @@ router.put('/:id', auth, [
     res.json({
       success: true,
       message: 'Transação atualizada com sucesso',
-      transaction: updatedTransaction
+      data: updatedTransaction
     });
   } catch (error) {
     console.error('Erro ao atualizar transação:', error);
@@ -267,7 +354,7 @@ router.delete('/:id', auth, async (req, res) => {
   }
 });
 
-// Obter resumo financeiro
+// Manter a rota de overview que já existia
 router.get('/summary/overview', auth, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
