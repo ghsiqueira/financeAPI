@@ -5,13 +5,14 @@ const auth = require('../middleware/auth');
 
 const router = express.Router();
 
-// Criar meta
+// Criar meta - CORRIGIDO para incluir category
 router.post('/', auth, [
   body('title').notEmpty().withMessage('Título é obrigatório'),
   body('targetAmount').isFloat({ min: 0.01 }).withMessage('Valor da meta deve ser maior que 0'),
   body('startDate').isISO8601().withMessage('Data de início inválida'),
   body('endDate').isISO8601().withMessage('Data final inválida'),
-  body('description').optional().isString()
+  body('description').optional().isString(),
+  body('category').optional().isString() // ADICIONADO: validação para category
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -23,9 +24,8 @@ router.post('/', auth, [
       });
     }
 
-    const { title, description, targetAmount, startDate, endDate } = req.body;
+    const { title, description, targetAmount, startDate, endDate, category } = req.body;
 
-    // Validar datas
     if (new Date(endDate) <= new Date(startDate)) {
       return res.status(400).json({
         success: false,
@@ -36,10 +36,11 @@ router.post('/', auth, [
     const goal = new Goal({
       userId: req.user._id,
       title,
-      description,
+      description: description || '',
       targetAmount,
       startDate: new Date(startDate),
-      endDate: new Date(endDate)
+      endDate: new Date(endDate),
+      category: category || '' // CORRIGIDO: incluir category
     });
 
     await goal.save();
@@ -58,7 +59,7 @@ router.post('/', auth, [
   }
 });
 
-// NOVA ROTA: Buscar metas ativas (deve vir ANTES da rota /:id)
+// Buscar metas ativas
 router.get('/active', auth, async (req, res) => {
   try {
     const { limit = 10 } = req.query;
@@ -70,7 +71,6 @@ router.get('/active', auth, async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(parseInt(limit));
 
-    // Calcular progresso para cada meta
     const goalsWithProgress = goals.map(goal => {
       const progress = goal.targetAmount > 0 ? 
         (goal.currentAmount / goal.targetAmount) * 100 : 0;
@@ -108,59 +108,6 @@ router.get('/active', auth, async (req, res) => {
   }
 });
 
-// Obter estatísticas das metas (deve vir ANTES da rota /:id)
-router.get('/stats/overview', auth, async (req, res) => {
-  try {
-    const stats = await Goal.aggregate([
-      {
-        $match: { userId: req.user._id }
-      },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          totalTarget: { $sum: '$targetAmount' },
-          totalCurrent: { $sum: '$currentAmount' }
-        }
-      }
-    ]);
-
-    const result = {
-      active: { count: 0, totalTarget: 0, totalCurrent: 0 },
-      completed: { count: 0, totalTarget: 0, totalCurrent: 0 },
-      paused: { count: 0, totalTarget: 0, totalCurrent: 0 },
-      total: { count: 0, totalTarget: 0, totalCurrent: 0 }
-    };
-
-    stats.forEach(stat => {
-      result[stat._id] = {
-        count: stat.count,
-        totalTarget: stat.totalTarget,
-        totalCurrent: stat.totalCurrent
-      };
-      
-      result.total.count += stat.count;
-      result.total.totalTarget += stat.totalTarget;
-      result.total.totalCurrent += stat.totalCurrent;
-    });
-
-    result.total.progress = result.total.totalTarget > 0 
-      ? (result.total.totalCurrent / result.total.totalTarget) * 100 
-      : 0;
-
-    res.json({
-      success: true,
-      stats: result
-    });
-  } catch (error) {
-    console.error('Erro ao obter estatísticas das metas:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erro interno do servidor'
-    });
-  }
-});
-
 // Listar metas
 router.get('/', auth, async (req, res) => {
   try {
@@ -178,7 +125,6 @@ router.get('/', auth, async (req, res) => {
 
     const total = await Goal.countDocuments(filters);
 
-    // Calcular progresso para cada meta
     const goalsWithProgress = goals.map(goal => {
       const progress = goal.targetAmount > 0 ? 
         (goal.currentAmount / goal.targetAmount) * 100 : 0;
@@ -186,13 +132,19 @@ router.get('/', auth, async (req, res) => {
       const totalDays = Math.ceil((goal.endDate - goal.startDate) / (1000 * 60 * 60 * 24));
       const daysPassed = Math.ceil((now - goal.startDate) / (1000 * 60 * 60 * 24));
       const daysRemaining = Math.max(0, Math.ceil((goal.endDate - now) / (1000 * 60 * 60 * 24)));
+      const monthsRemaining = Math.max(1, Math.ceil(daysRemaining / 30));
+      const remainingAmount = Math.max(0, goal.targetAmount - goal.currentAmount);
+      const monthlyTargetRemaining = remainingAmount / monthsRemaining;
       
       return {
         ...goal.toObject(),
         progress: Math.min(progress, 100),
         daysRemaining,
         totalDays,
-        daysPassed: Math.max(0, daysPassed)
+        daysPassed: Math.max(0, daysPassed),
+        monthsRemaining,
+        remainingAmount,
+        monthlyTargetRemaining
       };
     });
 
@@ -214,7 +166,7 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-// Obter meta por ID (deve vir DEPOIS das rotas específicas)
+// Obter meta por ID
 router.get('/:id', auth, async (req, res) => {
   try {
     const goal = await Goal.findOne({
@@ -229,7 +181,6 @@ router.get('/:id', auth, async (req, res) => {
       });
     }
 
-    // Calcular informações adicionais
     const progress = goal.targetAmount > 0 ? 
       (goal.currentAmount / goal.targetAmount) * 100 : 0;
     const now = new Date();
@@ -262,14 +213,15 @@ router.get('/:id', auth, async (req, res) => {
   }
 });
 
-// Atualizar meta
+// Atualizar meta - CORRIGIDO para incluir category
 router.put('/:id', auth, [
   body('title').optional().notEmpty().withMessage('Título não pode estar vazio'),
   body('targetAmount').optional().isFloat({ min: 0.01 }).withMessage('Valor da meta deve ser maior que 0'),
   body('startDate').optional().isISO8601().withMessage('Data de início inválida'),
   body('endDate').optional().isISO8601().withMessage('Data final inválida'),
   body('status').optional().isIn(['active', 'completed', 'paused']).withMessage('Status inválido'),
-  body('description').optional().isString()
+  body('description').optional().isString(),
+  body('category').optional().isString() // ADICIONADO: validação para category
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -304,12 +256,12 @@ router.put('/:id', auth, [
       });
     }
 
-    // Atualizar campos
+    // Atualizar campos incluindo category
     Object.keys(req.body).forEach(key => {
       if (key === 'startDate' || key === 'endDate') {
         goal[key] = new Date(req.body[key]);
       } else {
-        goal[key] = req.body[key];
+        goal[key] = req.body[key]; // Inclui category automaticamente
       }
     });
 
@@ -331,6 +283,78 @@ router.put('/:id', auth, [
 });
 
 // Adicionar valor à meta
+router.post('/:id/add', auth, [
+  body('amount').isFloat({ min: 0.01 }).withMessage('Valor deve ser maior que 0')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Dados inválidos',
+        errors: errors.array()
+      });
+    }
+
+    const goal = await Goal.findOne({
+      _id: req.params.id,
+      userId: req.user._id
+    });
+
+    if (!goal) {
+      return res.status(404).json({
+        success: false,
+        message: 'Meta não encontrada'
+      });
+    }
+
+    goal.currentAmount += req.body.amount;
+    
+    if (goal.currentAmount >= goal.targetAmount && goal.status === 'active') {
+      goal.status = 'completed';
+    }
+
+    goal.updatedAt = new Date();
+    await goal.save();
+
+    const progress = goal.targetAmount > 0 ? 
+      (goal.currentAmount / goal.targetAmount) * 100 : 0;
+    const now = new Date();
+    const totalDays = Math.ceil((goal.endDate - goal.startDate) / (1000 * 60 * 60 * 24));
+    const daysPassed = Math.ceil((now - goal.startDate) / (1000 * 60 * 60 * 24));
+    const daysRemaining = Math.max(0, Math.ceil((goal.endDate - now) / (1000 * 60 * 60 * 24)));
+    const monthsRemaining = Math.max(1, Math.ceil(daysRemaining / 30));
+    const remainingAmount = Math.max(0, goal.targetAmount - goal.currentAmount);
+    const monthlyTargetRemaining = remainingAmount / monthsRemaining;
+
+    const goalWithCalculations = {
+      ...goal.toObject(),
+      progress: Math.min(progress, 100),
+      daysRemaining,
+      totalDays,
+      daysPassed: Math.max(0, daysPassed),
+      monthsRemaining,
+      remainingAmount,
+      monthlyTargetRemaining
+    };
+
+    res.json({
+      success: true,
+      message: goal.status === 'completed' ? 
+        'Parabéns! Meta concluída!' : 
+        'Valor adicionado à meta com sucesso',
+      goal: goalWithCalculations
+    });
+  } catch (error) {
+    console.error('Erro ao adicionar valor à meta:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro interno do servidor'
+    });
+  }
+});
+
+// Endpoint alternativo mantido para compatibilidade
 router.patch('/:id/add-amount', auth, [
   body('amount').isFloat({ min: 0.01 }).withMessage('Valor deve ser maior que 0')
 ], async (req, res) => {
@@ -358,7 +382,6 @@ router.patch('/:id/add-amount', auth, [
 
     goal.currentAmount += req.body.amount;
     
-    // Atualizar status se meta atingida
     if (goal.currentAmount >= goal.targetAmount && goal.status === 'active') {
       goal.status = 'completed';
     }
