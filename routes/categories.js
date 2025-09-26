@@ -84,9 +84,25 @@ router.get('/', auth, async (req, res) => {
     const categories = await Category.find(filters)
       .sort({ isDefault: -1, name: 1 });
 
-    // Contar uso de cada categoria
-    const categoriesWithUsage = await Promise.all(
-      categories.map(async (category) => {
+    // Remover duplicatas e validar ícones
+    const uniqueCategories = [];
+    const seenNames = new Set();
+
+    for (const category of categories) {
+      const categoryName = category.name.toLowerCase().trim();
+      
+      // Validar se tem ícone válido (não vazio e não é '?')
+      const hasValidIcon = category.icon && 
+                          category.icon.trim() !== '' && 
+                          category.icon !== '?';
+      
+      const hasValidColor = category.color && category.color.trim() !== '';
+      
+      // Só adiciona se não for duplicada e tiver dados válidos
+      if (!seenNames.has(categoryName) && hasValidIcon && hasValidColor) {
+        seenNames.add(categoryName);
+        
+        // Contar uso de cada categoria
         const transactionCount = await Transaction.countDocuments({
           category: category._id,
           userId: req.user._id
@@ -97,20 +113,21 @@ router.get('/', auth, async (req, res) => {
           userId: req.user._id
         });
 
-        return {
+        uniqueCategories.push({
           ...category.toObject(),
           usage: {
             transactions: transactionCount,
             budgets: budgetCount,
             total: transactionCount + budgetCount
           }
-        };
-      })
-    );
+        });
+      }
+    }
 
     res.json({
       success: true,
-      categories: categoriesWithUsage
+      categories: uniqueCategories,
+      data: uniqueCategories
     });
   } catch (error) {
     console.error('Erro ao listar categorias:', error);
@@ -423,6 +440,152 @@ router.get('/icons/available', (req, res) => {
       categories: iconCategories
     }
   });
+});
+
+// Rota para limpar categorias duplicadas (executar uma vez)
+router.post('/cleanup-duplicates', auth, async (req, res) => {
+  try {
+    console.log('🧹 Iniciando limpeza de categorias duplicadas...');
+    
+    const categories = await Category.find({ 
+      userId: req.user._id 
+    });
+    
+    const uniqueMap = new Map();
+    const toDelete = [];
+
+    for (const category of categories) {
+      const key = category.name.toLowerCase().trim();
+      
+      if (!uniqueMap.has(key)) {
+        // Primeira ocorrência - verificar se tem ícone válido
+        if (category.icon && category.icon !== '?' && category.icon.trim() !== '') {
+          uniqueMap.set(key, category._id);
+        } else {
+          // Se não tem ícone válido, também marca para deletar
+          toDelete.push(category._id);
+        }
+      } else {
+        // Duplicata - marcar para deletar
+        toDelete.push(category._id);
+      }
+    }
+
+    // Deletar duplicatas e categorias sem ícone válido
+    let deletedCount = 0;
+    if (toDelete.length > 0) {
+      const result = await Category.deleteMany({ 
+        _id: { $in: toDelete } 
+      });
+      deletedCount = result.deletedCount;
+    }
+
+    console.log(`✅ Limpeza concluída: ${deletedCount} categorias removidas`);
+
+    res.json({
+      success: true,
+      message: `${deletedCount} categorias duplicadas/inválidas removidas`,
+      data: { 
+        deleted: deletedCount,
+        remaining: uniqueMap.size
+      }
+    });
+  } catch (error) {
+    console.error('Erro ao limpar duplicatas:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro ao limpar duplicatas'
+    });
+  }
+});
+
+// DEBUG: Ver todas as categorias (SEM autenticação - apenas para desenvolvimento)
+router.get('/debug/all-public', async (req, res) => {
+  try {
+    const categories = await Category.find({});
+
+    res.json({
+      success: true,
+      total: categories.length,
+      categories: categories.map(cat => ({
+        id: cat._id,
+        name: cat.name,
+        icon: cat.icon,
+        iconCode: cat.icon ? cat.icon.charCodeAt(0) : null,
+        color: cat.color,
+        type: cat.type,
+        isDefault: cat.isDefault,
+        userId: cat.userId
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/debug/fix-all-icons', async (req, res) => {
+  try {
+    const iconMap = {
+      'alimentação': '🍽️',
+      'transporte': '🚗',
+      'moradia': '🏠',
+      'saúde': '🏥',
+      'educação': '📚',
+      'lazer': '🎬',
+      'vestuário': '👕',
+      'compras': '🛒',
+      'beleza & cuidados': '💄',
+      'academia': '🏋️',
+      'combustível': '⛽',
+      'farmácia': '💊',
+      'contas & impostos': '📋',
+      'viagem': '✈️',
+      'pets': '🐕',
+      'assinaturas': '📱',
+      'salário': '💼',
+      'freelance': '💻',
+      'investimentos': '📈',
+      'bonus': '🎁',
+      'vendas': '💵',
+      'aluguel recebido': '🏘️',
+      'restituição': '↩️',
+      'outros': '💰',
+      'transferência': '🔄',
+      'categoria teste': '🧪'
+    };
+
+    const categories = await Category.find({});
+    let updated = 0;
+
+    for (const category of categories) {
+      const nameKey = category.name.toLowerCase().trim();
+      
+      // Verificar se o ícone é um nome do Ionicons (texto sem emoji)
+      const isTextIcon = category.icon && /^[a-z-]+$/i.test(category.icon);
+      
+      if (!category.icon || category.icon === '?' || category.icon.trim() === '' || isTextIcon) {
+        const newIcon = iconMap[nameKey] || (category.type === 'income' ? '💵' : '💰');
+        
+        await Category.findByIdAndUpdate(category._id, {
+          icon: newIcon
+        });
+        
+        updated++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${updated} categorias atualizadas com ícones emoji`,
+      updated,
+      details: 'Ícones do Ionicons convertidos para emojis'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
 });
 
 module.exports = router;
