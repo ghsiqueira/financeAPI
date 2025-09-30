@@ -9,6 +9,7 @@ const transactionRoutes = require('./routes/transactions');
 const goalRoutes = require('./routes/goals');
 const budgetRoutes = require('./routes/budgets');
 const categoryRoutes = require('./routes/categories');
+const goalShareRoutes = require('./routes/goalShares');
 
 // Carregar recurring service com debug
 let recurringService = null;
@@ -180,6 +181,14 @@ try {
   console.error('❌ Erro ao registrar rotas de categories:', error.message);
 }
 
+// ✅ NOVO: Rotas de compartilhamento de metas
+try {
+  app.use('/api', goalShareRoutes);
+  console.log('✅ Rotas de goal-shares registradas');
+} catch (error) {
+  console.error('❌ Erro ao registrar rotas de goal-shares:', error.message);
+}
+
 // Middleware para capturar rotas não encontradas
 app.use('/api/*', (req, res) => {
   console.log(`❌ Rota não encontrada: ${req.method} ${req.originalUrl}`);
@@ -196,6 +205,14 @@ app.use('/api/*', (req, res) => {
       'GET /api/transactions/recent',
       'GET /api/goals',
       'GET /api/goals/active',
+      'POST /api/goals/:goalId/share',
+      'GET /api/goals/:goalId/shares',
+      'GET /api/goal-shares/pending',
+      'GET /api/goal-shares/accepted',
+      'POST /api/goal-shares/:shareId/accept',
+      'POST /api/goal-shares/:shareId/reject',
+      'DELETE /api/goal-shares/:shareId',
+      'PATCH /api/goal-shares/:shareId/role',
       'GET /api/budgets',
       'GET /api/budgets/current',
       'GET /api/categories'
@@ -222,21 +239,17 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Cron job para transações recorrentes com debug completo
+// Cron job para transações recorrentes
 if (recurringService) {
   console.log('⏰ Configurando cron job para transações recorrentes...');
   
-  // Executar todo dia às 00:01
   cron.schedule('1 0 * * *', async () => {
     const timestamp = new Date().toISOString();
     console.log(`\n🔄 [${timestamp}] Iniciando processamento de transações recorrentes...`);
     
     try {
       const startTime = Date.now();
-      
-      // Processar transações recorrentes
       const result = await recurringService.processRecurringTransactions();
-      
       const endTime = Date.now();
       const duration = endTime - startTime;
       
@@ -248,26 +261,15 @@ if (recurringService) {
       console.error(`❌ [${timestamp}] Erro no processamento de transações recorrentes:`);
       console.error('   Erro:', error.message);
       console.error('   Stack:', error.stack);
-      
-      // Log adicional para debugging
-      if (error.name === 'ValidationError') {
-        console.error('   Detalhes da validação:', error.errors);
-      }
-      
-      if (error.name === 'MongoError' || error.name === 'MongooseError') {
-        console.error('   Erro do MongoDB:', error.codeName || error.code);
-      }
     }
   }, {
     scheduled: true,
-    timezone: "America/Sao_Paulo" // Timezone do Brasil
+    timezone: "America/Sao_Paulo"
   });
   
   console.log('✅ Cron job configurado para executar todo dia às 00:01 (horário de Brasília)');
   
-  // Função para testar manualmente (apenas em desenvolvimento)
   if (process.env.NODE_ENV === 'development') {
-    // Adicionar rota para testar transações recorrentes manualmente
     app.get('/api/debug/test-recurring', async (req, res) => {
       console.log('🧪 Teste manual de transações recorrentes iniciado...');
       
@@ -307,10 +309,9 @@ if (recurringService) {
   
 } else {
   console.log('⚠️ Cron job NÃO configurado - serviço de transações recorrentes não disponível');
-  console.log('💡 Para habilitar, crie o arquivo services/recurringService.js');
 }
 
-// Função para graceful shutdown
+// Graceful shutdown
 const gracefulShutdown = (signal) => {
   console.log(`\n🛑 Recebido ${signal}. Fechando servidor graciosamente...`);
   
@@ -320,11 +321,9 @@ const gracefulShutdown = (signal) => {
   });
 };
 
-// Event listeners para shutdown
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// Capturar erros não tratados
 process.on('uncaughtException', (error) => {
   console.error('💥 Exceção não capturada:', error);
   process.exit(1);
@@ -346,7 +345,6 @@ const server = app.listen(PORT, () => {
   console.log('\n✨ API pronta para receber requisições!');
 });
 
-// Debug: Event listeners do servidor
 server.on('error', (error) => {
   console.error('❌ Erro do servidor:', error);
 });

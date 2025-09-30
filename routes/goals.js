@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const Goal = require('../models/Goal');
+const GoalShare = require('../models/GoalShare');
 const auth = require('../middleware/auth');
 
 const router = express.Router();
@@ -12,7 +13,7 @@ router.post('/', auth, [
   body('startDate').isISO8601().withMessage('Data de início inválida'),
   body('endDate').isISO8601().withMessage('Data final inválida'),
   body('description').optional().isString(),
-  body('category').optional().isString() // ADICIONADO: validação para category
+  body('category').optional().isString()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -40,7 +41,7 @@ router.post('/', auth, [
       targetAmount,
       startDate: new Date(startDate),
       endDate: new Date(endDate),
-      category: category || '' // CORRIGIDO: incluir category
+      category: category || ''
     });
 
     await goal.save();
@@ -166,13 +167,10 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-// Obter meta por ID
+// Obter meta por ID - MODIFICADO para permitir acesso a metas compartilhadas
 router.get('/:id', auth, async (req, res) => {
   try {
-    const goal = await Goal.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+    const goal = await Goal.findById(req.params.id);
 
     if (!goal) {
       return res.status(404).json({
@@ -181,6 +179,25 @@ router.get('/:id', auth, async (req, res) => {
       });
     }
 
+    // Verificar se o usuário é o dono OU tem acesso compartilhado
+    const isOwner = goal.userId.toString() === req.user._id.toString();
+    
+    if (!isOwner) {
+      const share = await GoalShare.findOne({
+        goal: req.params.id,
+        sharedWith: req.user._id,
+        status: 'accepted'
+      });
+
+      if (!share) {
+        return res.status(404).json({
+          success: false,
+          message: 'Meta não encontrada'
+        });
+      }
+    }
+
+    // Calcular campos adicionais
     const progress = goal.targetAmount > 0 ? 
       (goal.currentAmount / goal.targetAmount) * 100 : 0;
     const now = new Date();
@@ -221,7 +238,7 @@ router.put('/:id', auth, [
   body('endDate').optional().isISO8601().withMessage('Data final inválida'),
   body('status').optional().isIn(['active', 'completed', 'paused']).withMessage('Status inválido'),
   body('description').optional().isString(),
-  body('category').optional().isString() // ADICIONADO: validação para category
+  body('category').optional().isString()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -261,7 +278,7 @@ router.put('/:id', auth, [
       if (key === 'startDate' || key === 'endDate') {
         goal[key] = new Date(req.body[key]);
       } else {
-        goal[key] = req.body[key]; // Inclui category automaticamente
+        goal[key] = req.body[key];
       }
     });
 
@@ -282,7 +299,7 @@ router.put('/:id', auth, [
   }
 });
 
-// Adicionar valor à meta
+// Adicionar valor à meta - MODIFICADO para permitir contribuidores
 router.post('/:id/add', auth, [
   body('amount').isFloat({ min: 0.01 }).withMessage('Valor deve ser maior que 0')
 ], async (req, res) => {
@@ -296,16 +313,35 @@ router.post('/:id/add', auth, [
       });
     }
 
-    const goal = await Goal.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+    const goal = await Goal.findById(req.params.id);
 
     if (!goal) {
       return res.status(404).json({
         success: false,
         message: 'Meta não encontrada'
       });
+    }
+
+    // Verificar se é dono OU tem permissão para adicionar
+    const isOwner = goal.userId.toString() === req.user._id.toString();
+    
+    if (!isOwner) {
+      const share = await GoalShare.findOne({
+        goal: req.params.id,
+        sharedWith: req.user._id,
+        status: 'accepted'
+      });
+
+      if (!share || !share.permissions.canAddAmount) {
+        return res.status(403).json({
+          success: false,
+          message: 'Você não tem permissão para adicionar valores a esta meta'
+        });
+      }
+
+      // Atualizar contribuição do usuário
+      share.contribution += req.body.amount;
+      await share.save();
     }
 
     goal.currentAmount += req.body.amount;
@@ -317,6 +353,7 @@ router.post('/:id/add', auth, [
     goal.updatedAt = new Date();
     await goal.save();
 
+    // Calcular campos adicionais
     const progress = goal.targetAmount > 0 ? 
       (goal.currentAmount / goal.targetAmount) * 100 : 0;
     const now = new Date();
