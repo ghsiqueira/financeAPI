@@ -11,19 +11,21 @@ const router = express.Router();
 router.get('/summary', auth, async (req, res) => {
   try {
     const { month, year } = req.query;
-    const currentMonth = month || new Date().getMonth() + 1;
-    const currentYear = year || new Date().getFullYear();
-
-    const startDate = new Date(currentYear, currentMonth - 1, 1);
-    const endDate = new Date(currentYear, currentMonth, 0, 23, 59, 59);
+    
+    const matchFilter = { userId: req.user._id };
+    
+    // Apenas adiciona filtro de data se mês e ano forem fornecidos
+    if (month && year) {
+      const currentMonth = parseInt(month);
+      const currentYear = parseInt(year);
+      const startDate = new Date(currentYear, currentMonth - 1, 1);
+      const endDate = new Date(currentYear, currentMonth, 0, 23, 59, 59);
+      
+      matchFilter.date = { $gte: startDate, $lte: endDate };
+    }
 
     const summary = await Transaction.aggregate([
-      {
-        $match: {
-          userId: req.user._id,
-          date: { $gte: startDate, $lte: endDate }
-        }
-      },
+      { $match: matchFilter },
       {
         $group: {
           _id: '$type',
