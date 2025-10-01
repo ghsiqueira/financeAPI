@@ -1,3 +1,4 @@
+// models/User.js - VERSÃO ATUALIZADA COM CAMPOS DE RESET
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -19,6 +20,17 @@ const userSchema = new mongoose.Schema({
     required: true,
     minlength: 6
   },
+  
+  // ===== NOVOS CAMPOS PARA RESET DE SENHA =====
+  resetPasswordCode: {
+    type: String,
+    default: null
+  },
+  resetPasswordExpiry: {
+    type: Date,
+    default: null
+  },
+  
   createdAt: {
     type: Date,
     default: Date.now
